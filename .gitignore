@@ -1,0 +1,3 @@
+/node_modules
+touch index.js vercel.json .gitignore
+.env

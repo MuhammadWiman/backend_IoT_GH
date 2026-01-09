@@ -12,8 +12,8 @@ const TANK_LOW_CM   = 25;
 // ======================
 // CONFIG SOIL
 // ======================
-const SOIL_DRY = 40;
-const SOIL_WET = 60;
+const SOIL_DRY = 60;
+const SOIL_WET = 40;
 
 // ======================
 // GLOBAL STATES

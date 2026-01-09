@@ -45,11 +45,11 @@ function decidePumpSoil() {
 
   // Soil kering → tutup solenoid (air ke soil)
   if (values.some(v => v < SOIL_DRY))
-    return { action: "ON", reason: "soil_dry_direct_to_soil" };
+    return { action: "OFF", reason: "soil_dry_direct_to_soil" };
 
   // Soil lembab / basah → buka solenoid (air ke bak)
   if (values.every(v => v >= SOIL_WET))
-    return { action: "OFF", reason: "soil_wet_direct_to_tank" };
+    return { action: "ON", reason: "soil_wet_direct_to_tank" };
 
   return { action: "HOLD", reason: "soil_normal" };
 }

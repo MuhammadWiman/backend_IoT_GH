@@ -12,14 +12,8 @@ const TANK_LOW_CM   = 25;
 // ======================
 // CONFIG SOIL
 // ======================
-const SOIL_DRY = 25;
-const SOIL_WET = 30;
-
-// ======================
-// PULSE CONFIG
-// ======================
-const PULSE_ON_MS    = 15000;
-const PULSE_COOLDOWN = 180000;
+const SOIL_DRY = 40;
+const SOIL_WET = 60;
 
 // ======================
 // GLOBAL STATES
@@ -34,13 +28,14 @@ const soilStates = new Map();
 // ======================
 // LAST STATES
 // ======================
-let lastPumpSoilState    = null;
-let lastPumpHidroState   = null;
+let lastPumpSoilState    = null; // SOLENOID
+let lastPumpHidroState   = null; // POMPA SANYO
 let lastPumpNutrisiState = null;
-let lastPulseAt          = 0;
 
 // ======================
-// DECISION: SOIL
+// DECISION: SOIL (SOLENOID)
+// OFF = CLOSE = AIR KE SOIL
+// ON  = OPEN  = AIR KE BAK
 // ======================
 function decidePumpSoil() {
   if (soilStates.size === 0)
@@ -48,49 +43,37 @@ function decidePumpSoil() {
 
   const values = [...soilStates.values()];
 
+  // Soil kering → tutup solenoid (air ke soil)
   if (values.some(v => v < SOIL_DRY))
-    return { action: "ON", reason: "soil_dry" };
+    return { action: "OFF", reason: "soil_dry_direct_to_soil" };
 
+  // Soil lembab / basah → buka solenoid (air ke bak)
   if (values.every(v => v >= SOIL_WET))
-    return { action: "OFF", reason: "soil_wet" };
+    return { action: "ON", reason: "soil_wet_direct_to_tank" };
 
   return { action: "HOLD", reason: "soil_normal" };
 }
 
 // ======================
 // DECISION: HIDRO / SANYO
+// HANYA BERDASARKAN LEVEL BAK
 // ======================
 function decidePumpHidroponic() {
   if (globalState.distance_cm === null)
     return { action: "HOLD", reason: "no_ultrasonic_data" };
 
   const d = globalState.distance_cm;
-  const soilDecision = decidePumpSoil();
-  const now = Date.now();
 
-  if (d >= TANK_LOW_CM)
-    return { action: "ON", reason: "tank_low_continuous" };
-
-  if (
-    d >= TANK_FULL_MIN &&
-    d <= TANK_FULL_MAX &&
-    soilDecision.action === "ON"
-  ) {
-    if (now - lastPulseAt >= PULSE_COOLDOWN) {
-      lastPulseAt = now;
-      return { action: "ON", reason: "pulse_irrigation" };
-    }
-    return { action: "OFF", reason: "pulse_cooldown" };
-  }
-
+  // Bak penuh → matikan pompa
   if (d <= TANK_FULL_MAX)
-    return { action: "OFF", reason: "tank_full" };
+    return { action: "OFF", reason: "tank_full_stop_pump" };
 
-  return { action: "HOLD", reason: "stable" };
+  // Bak belum penuh → nyalakan pompa
+  return { action: "ON", reason: "tank_not_full_fill" };
 }
 
 // ======================
-// DECISION: NUTRISI
+// DECISION: NUTRISI (TDS)
 // ======================
 function decidePumpNutrisi() {
   if (globalState.tds_ppm === null)
@@ -106,11 +89,10 @@ function decidePumpNutrisi() {
 }
 
 // ======================
-// OVERWRITE DASHBOARD
+// DASHBOARD (LOG)
 // ======================
 function renderDashboard(soilDecision, hidroDecision, nutrisiDecision) {
-  console.clear();
-  console.log("=== HYDROPONIC CONTROL DASHBOARD ===");
+  console.log("\n=== HYDROPONIC CONTROL DASHBOARD ===");
   console.log("Time:", new Date().toLocaleString());
 
   const soilValues = [...soilStates.values()];
@@ -122,7 +104,7 @@ function renderDashboard(soilDecision, hidroDecision, nutrisiDecision) {
   console.log("\n[ DECISION ]");
   console.table([
     {
-      Subsystem: "SOIL",
+      Subsystem: "SOIL (SOLENOID)",
       Action: soilDecision.action,
       Reason: soilDecision.reason,
       Value: soilAvg !== "-" ? `${soilAvg} %` : "-"
@@ -149,9 +131,9 @@ function renderDashboard(soilDecision, hidroDecision, nutrisiDecision) {
 
   console.log("[ PUMP STATUS ]");
   console.table([
-    { Pump: "pump-soil",       Status: lastPumpSoilState ?? "-" },
-    { Pump: "pump-hidroponic", Status: lastPumpHidroState ?? "-" },
-    { Pump: "pump-nutrisi",    Status: lastPumpNutrisiState ?? "-" }
+    { Pump: "pump-soil (solenoid)", Status: lastPumpSoilState ?? "-" },
+    { Pump: "pump-hidroponic",      Status: lastPumpHidroState ?? "-" },
+    { Pump: "pump-nutrisi",         Status: lastPumpNutrisiState ?? "-" }
   ]);
 }
 

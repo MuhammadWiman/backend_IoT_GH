@@ -5,9 +5,7 @@ const PumpLog = require("../models/PumpLog");
 // ======================
 // CONFIG LEVEL AIR
 // ======================
-const TANK_FULL_MIN = 10;
-const TANK_FULL_MAX = 15;
-const TANK_LOW_CM   = 25;
+const TANK_FULL_MAX = 15;   // cm (<= ini dianggap penuh)
 
 // ======================
 // CONFIG SOIL
@@ -26,54 +24,109 @@ const globalState = {
 const soilStates = new Map();
 
 // ======================
-// LAST STATES
+// FSM STATES
+// ======================
+const STATES = {
+  IDLE: "IDLE",
+  IRRIGATE_SOIL: "IRRIGATE_SOIL",
+  FILL_TANK: "FILL_TANK"
+};
+
+let currentState = STATES.IDLE;
+
+// ======================
+// LAST RELAY STATES
 // ======================
 let lastPumpSoilState    = null; // SOLENOID
 let lastPumpHidroState   = null; // POMPA SANYO
 let lastPumpNutrisiState = null;
 
 // ======================
-// DECISION: SOIL (SOLENOID)
-// OFF = CLOSE = AIR KE SOIL
-// ON  = OPEN  = AIR KE BAK
+// SENSOR HELPERS
 // ======================
-function decidePumpSoil() {
-  if (soilStates.size === 0)
-    return { action: "HOLD", reason: "no_soil_data" };
+function isSoilDry() {
+  if (soilStates.size === 0) return false;
+  return [...soilStates.values()].some(v => v < SOIL_DRY);
+}
 
-  const values = [...soilStates.values()];
+function isSoilWet() {
+  if (soilStates.size === 0) return false;
+  return [...soilStates.values()].every(v => v >= SOIL_WET);
+}
 
-  // Soil kering → tutup solenoid (air ke soil)
-  if (values.some(v => v < SOIL_DRY))
-    return { action: "OFF", reason: "soil_dry_direct_to_soil" };
-
-  // Soil lembab / basah → buka solenoid (air ke bak)
-  if (values.every(v => v >= SOIL_WET))
-    return { action: "ON", reason: "soil_wet_direct_to_tank" };
-
-  return { action: "HOLD", reason: "soil_normal" };
+function isTankFull() {
+  if (globalState.distance_cm === null) return false;
+  return globalState.distance_cm <= TANK_FULL_MAX;
 }
 
 // ======================
-// DECISION: HIDRO / SANYO
-// HANYA BERDASARKAN LEVEL BAK
+// FSM TRANSITION
 // ======================
-function decidePumpHidroponic() {
-  if (globalState.distance_cm === null)
-    return { action: "HOLD", reason: "no_ultrasonic_data" };
+function updateState() {
+  switch (currentState) {
 
-  const d = globalState.distance_cm;
+    case STATES.IDLE:
+      if (isSoilDry()) {
+        currentState = STATES.IRRIGATE_SOIL;
+      } else if (!isTankFull()) {
+        currentState = STATES.FILL_TANK;
+      }
+      break;
 
-  // Bak penuh → matikan pompa
-  if (d <= TANK_FULL_MAX)
-    return { action: "OFF", reason: "tank_full_stop_pump" };
+    case STATES.IRRIGATE_SOIL:
+      if (isSoilWet()) {
+        if (!isTankFull()) {
+          currentState = STATES.FILL_TANK;
+        } else {
+          currentState = STATES.IDLE;
+        }
+      }
+      break;
 
-  // Bak belum penuh → nyalakan pompa
-  return { action: "ON", reason: "tank_not_full_fill" };
+    case STATES.FILL_TANK:
+      if (isTankFull()) {
+        if (isSoilDry()) {
+          currentState = STATES.IRRIGATE_SOIL;
+        } else {
+          currentState = STATES.IDLE;
+        }
+      }
+      break;
+  }
 }
 
 // ======================
-// DECISION: NUTRISI (TDS)
+// FSM ACTIONS
+// ======================
+function decideByState() {
+  switch (currentState) {
+
+    // Soil kering → air ke soil
+    case STATES.IRRIGATE_SOIL:
+      return {
+        soil:  { action: "OFF", reason: "fsm_irrigate_soil" }, // solenoid CLOSE
+        hidro: { action: "ON",  reason: "fsm_irrigate_soil" }  // pompa ON
+      };
+
+    // Isi bak
+    case STATES.FILL_TANK:
+      return {
+        soil:  { action: "ON",  reason: "fsm_fill_tank" }, // solenoid OPEN
+        hidro: { action: "ON",  reason: "fsm_fill_tank" }  // pompa ON
+      };
+
+    // Aman
+    case STATES.IDLE:
+    default:
+      return {
+        soil:  { action: "ON",  reason: "fsm_idle" }, // arah ke bak
+        hidro: { action: "OFF", reason: "fsm_idle" }  // pompa mati
+      };
+  }
+}
+
+// ======================
+// NUTRISI (TIDAK DIUBAH)
 // ======================
 function decidePumpNutrisi() {
   if (globalState.tds_ppm === null)
@@ -89,11 +142,13 @@ function decidePumpNutrisi() {
 }
 
 // ======================
-// DASHBOARD (LOG)
+// DASHBOARD (OVERWRITE)
 // ======================
-function renderDashboard(soilDecision, hidroDecision, nutrisiDecision) {
-  console.log("\n=== HYDROPONIC CONTROL DASHBOARD ===");
+function renderDashboard(fsmDecision, nutrisiDecision) {
+  console.clear();
+  console.log("=== HYDROPONIC CONTROL DASHBOARD ===");
   console.log("Time:", new Date().toLocaleString());
+  console.log("FSM State:", currentState);
 
   const soilValues = [...soilStates.values()];
   const soilAvg =
@@ -105,14 +160,14 @@ function renderDashboard(soilDecision, hidroDecision, nutrisiDecision) {
   console.table([
     {
       Subsystem: "SOIL (SOLENOID)",
-      Action: soilDecision.action,
-      Reason: soilDecision.reason,
+      Action: fsmDecision.soil.action,
+      Reason: fsmDecision.soil.reason,
       Value: soilAvg !== "-" ? `${soilAvg} %` : "-"
     },
     {
       Subsystem: "HIDRO / SANYO",
-      Action: hidroDecision.action,
-      Reason: hidroDecision.reason,
+      Action: fsmDecision.hidro.action,
+      Reason: fsmDecision.hidro.reason,
       Value:
         globalState.distance_cm !== null
           ? `${globalState.distance_cm} cm`
@@ -177,15 +232,16 @@ async function publishRelay(channel, {
 // EVALUATION ENGINE
 // ======================
 async function evaluate(channel) {
-  const soilDecision    = decidePumpSoil();
-  const hidroDecision   = decidePumpHidroponic();
+  updateState();
+
+  const fsmDecision      = decideByState();
   const nutrisiDecision = decidePumpNutrisi();
 
   const soilRes = await publishRelay(channel, {
     pump: "soil",
     relay: "pump-soil",
     topic: "control.relay.soil",
-    decision: soilDecision,
+    decision: fsmDecision.soil,
     lastState: lastPumpSoilState
   });
   if (soilRes) lastPumpSoilState = soilRes;
@@ -194,7 +250,7 @@ async function evaluate(channel) {
     pump: "hidroponic",
     relay: "pump-hidroponic",
     topic: "control.relay.hidroponic",
-    decision: hidroDecision,
+    decision: fsmDecision.hidro,
     lastState: lastPumpHidroState
   });
   if (hidroRes) lastPumpHidroState = hidroRes;
@@ -208,7 +264,7 @@ async function evaluate(channel) {
   });
   if (nutrisiRes) lastPumpNutrisiState = nutrisiRes;
 
-  renderDashboard(soilDecision, hidroDecision, nutrisiDecision);
+  renderDashboard(fsmDecision, nutrisiDecision);
 }
 
 // ======================
@@ -241,6 +297,8 @@ async function startConsumers() {
     await evaluate(channel);
     channel.ack(msg);
   });
+
+  console.log("✅ FSM HYDROPONIC CONTROLLER ACTIVE");
 }
 
 module.exports = { startConsumers };

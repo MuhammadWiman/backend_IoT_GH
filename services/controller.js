@@ -29,7 +29,9 @@ const soilStates = new Map();
 const STATES = {
   IDLE: "IDLE",
   IRRIGATE_SOIL: "IRRIGATE_SOIL",
-  FILL_TANK: "FILL_TANK"
+  FILL_TANK: "FILL_TANK",
+  PULSE_DISTRIBUTION: "PULSE_DISTRIBUTION"
+
 };
 
 let currentState = STATES.IDLE;

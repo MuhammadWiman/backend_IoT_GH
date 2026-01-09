@@ -73,39 +73,33 @@ function isTankFull() {
 // FSM TRANSITION (FIXED)
 // ======================
 function updateState() {
+  if (manualSanyoActive) {
+    currentState = STATES.MANUAL_SANYO;
+    return;
+  }
   switch (currentState) {
 
     case STATES.IDLE:
-      if (isSoilDry() && !isTankFull()) {
-        currentState = STATES.PULSE_DISTRIBUTION;
+      if (!isTankFull()) {
+        currentState = STATES.FILL_TANK;
       } else if (isSoilDry()) {
         currentState = STATES.IRRIGATE_SOIL;
-      } else if (!isTankFull()) {
-        currentState = STATES.FILL_TANK;
-      }
-      break;
-
-    case STATES.PULSE_DISTRIBUTION:
-      if (isSoilWet()) {
-        currentState = isTankFull()
-          ? STATES.IDLE
-          : STATES.FILL_TANK;
-      }
-      break;
-
-    case STATES.IRRIGATE_SOIL:
-      if (isSoilWet()) {
-        currentState = isTankFull()
-          ? STATES.IDLE
-          : STATES.FILL_TANK;
       }
       break;
 
     case STATES.FILL_TANK:
       if (isTankFull()) {
-        currentState = isSoilDry()
-          ? STATES.IRRIGATE_SOIL
-          : STATES.IDLE;
+        if (isSoilDry()) {
+          currentState = STATES.IRRIGATE_SOIL;
+        } else {
+          currentState = STATES.IDLE;
+        }
+      }
+      break;
+
+    case STATES.IRRIGATE_SOIL:
+      if (isSoilWet()) {
+        currentState = STATES.IDLE;
       }
       break;
   }
@@ -115,47 +109,25 @@ function updateState() {
 // FSM ACTIONS
 // ======================
 function decideByState() {
-  const now = Date.now();
-
   switch (currentState) {
-
-    case STATES.PULSE_DISTRIBUTION: {
-      const duration =
-        pulseTarget === "SOIL" ? PULSE_SOIL_MS : PULSE_TANK_MS;
-
-      if (now - lastPulseSwitch >= duration) {
-        pulseTarget = pulseTarget === "SOIL" ? "TANK" : "SOIL";
-        lastPulseSwitch = now;
-      }
-
-      return pulseTarget === "SOIL"
-        ? {
-            soil:  { action: "OFF", reason: "pulse_to_soil" },
-            hidro: { action: "ON",  reason: "pulse_to_soil" }
-          }
-        : {
-            soil:  { action: "ON",  reason: "pulse_to_tank" },
-            hidro: { action: "ON",  reason: "pulse_to_tank" }
-          };
-    }
 
     case STATES.IRRIGATE_SOIL:
       return {
-        soil:  { action: "OFF", reason: "fsm_irrigate_soil" },
+        soil:  { action: "OFF", reason: "fsm_irrigate_soil" }, // ke soil
         hidro: { action: "ON",  reason: "fsm_irrigate_soil" }
       };
 
     case STATES.FILL_TANK:
       return {
-        soil:  { action: "ON",  reason: "fsm_fill_tank" },
+        soil:  { action: "ON",  reason: "fsm_fill_tank" }, // ke bak
         hidro: { action: "ON",  reason: "fsm_fill_tank" }
       };
 
     case STATES.IDLE:
     default:
       return {
-        soil:  { action: "ON",  reason: "fsm_idle" },
-        hidro: { action: "OFF", reason: "fsm_idle" }
+        soil:  { action: "OFF", reason: "fsm_idle_all_off" },
+        hidro: { action: "OFF", reason: "fsm_idle_all_off" }
       };
   }
 }
@@ -168,7 +140,7 @@ function decidePumpNutrisi() {
     return { action: "OFF", reason: "no_tds_data" };
 
   if (globalState.tds_ppm < 1 || globalState.tds_ppm > 3000)
-    return { action: "HOLD", reason: "tds_invalid" };
+    return { action: "OFF", reason: "tds_invalid" };
 
   if (globalState.tds_ppm < 79)
     return { action: "ON", reason: "tds_low" };
@@ -234,7 +206,7 @@ async function publishRelay(channel, {
   pump, relay, topic, decision, lastState
 }) {
   const { action, reason } = decision;
-  if (action === "HOLD") return;
+  if (action === "OFF") return;
   if (lastState === action) return;
 
   const payload = { pump, relay, action, reason, timestamp: new Date() };
@@ -319,6 +291,27 @@ async function startConsumers() {
     globalState.tds_ppm =
       JSON.parse(msg.content.toString()).tds_ppm;
     await evaluate(channel);
+    channel.ack(msg);
+  });
+
+  await channel.assertQueue(process.env.APPS_CONTROL_QUEUE, { durable: true });
+  channel.consume(process.env.APPS_CONTROL_QUEUE, async msg => {
+    const data = JSON.parse(msg.content.toString());
+
+    // HANYA POMPA SANYO (pump:1)
+    if (data.pump === 1) {
+
+      if (data.status === "ON") {
+        manualSanyoActive = true;
+        currentState = STATES.MANUAL_SANYO;
+      }
+
+      if (data.status === "OFF") {
+        manualSanyoActive = false;
+        currentState = STATES.IDLE;
+      }
+    }
+
     channel.ack(msg);
   });
 

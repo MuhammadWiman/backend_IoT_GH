@@ -6,7 +6,7 @@ const PumpLog = require("../models/PumpLog");
 // CONFIG LEVEL AIR
 // ======================
 const TANK_FULL_MIN = 10;
-const TANK_FULL_MAX = 20;
+const TANK_FULL_MAX = 15;
 const TANK_LOW_CM   = 25;
 
 // ======================

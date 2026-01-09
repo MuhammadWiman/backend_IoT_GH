@@ -3,17 +3,15 @@ const { connectRabbit, getChannel } = require("./rabbit");
 const PumpLog = require("../models/PumpLog");
 
 // ======================
-// CONFIG
+// CONFIG LEVEL AIR
+// ======================
+const TANK_FULL_MAX = 15;   // cm (<= ini dianggap penuh)
+
+// ======================
+// CONFIG SOIL
 // ======================
 const SOIL_DRY = 40;
 const SOIL_WET = 60;
-const TANK_FULL_MAX = 15;
-
-// ======================
-// PULSE CONFIG (TIME SHARING)
-// ======================
-const PULSE_SOIL_MS = 15000; // 15 detik ke soil
-const PULSE_TANK_MS = 15000; // 15 detik ke bak
 
 // ======================
 // GLOBAL STATES
@@ -22,6 +20,7 @@ const globalState = {
   distance_cm: null,
   tds_ppm: null
 };
+
 const soilStates = new Map();
 
 // ======================
@@ -30,36 +29,35 @@ const soilStates = new Map();
 const STATES = {
   IDLE: "IDLE",
   IRRIGATE_SOIL: "IRRIGATE_SOIL",
-  FILL_TANK: "FILL_TANK",
-  PULSE_DISTRIBUTION: "PULSE_DISTRIBUTION"
+  FILL_TANK: "FILL_TANK"
 };
 
 let currentState = STATES.IDLE;
 
 // ======================
-// RELAY LAST STATES
+// LAST RELAY STATES
 // ======================
-let lastPumpSoilState    = null;
-let lastPumpHidroState   = null;
+let lastPumpSoilState    = null; // SOLENOID
+let lastPumpHidroState   = null; // POMPA SANYO
 let lastPumpNutrisiState = null;
-
-// ======================
-// PULSE TIMER
-// ======================
-let pulseTarget = "SOIL"; // SOIL | TANK
-let lastPulseSwitch = Date.now();
 
 // ======================
 // SENSOR HELPERS
 // ======================
-const isSoilDry = () =>
-  soilStates.size > 0 && [...soilStates.values()].some(v => v < SOIL_DRY);
+function isSoilDry() {
+  if (soilStates.size === 0) return false;
+  return [...soilStates.values()].some(v => v < SOIL_DRY);
+}
 
-const isSoilWet = () =>
-  soilStates.size > 0 && [...soilStates.values()].every(v => v >= SOIL_WET);
+function isSoilWet() {
+  if (soilStates.size === 0) return false;
+  return [...soilStates.values()].every(v => v >= SOIL_WET);
+}
 
-const isTankFull = () =>
-  globalState.distance_cm !== null && globalState.distance_cm <= TANK_FULL_MAX;
+function isTankFull() {
+  if (globalState.distance_cm === null) return false;
+  return globalState.distance_cm <= TANK_FULL_MAX;
+}
 
 // ======================
 // FSM TRANSITION
@@ -68,9 +66,7 @@ function updateState() {
   switch (currentState) {
 
     case STATES.IDLE:
-      if (isSoilDry() && !isTankFull()) {
-        currentState = STATES.PULSE_DISTRIBUTION;
-      } else if (isSoilDry()) {
+      if (isSoilDry()) {
         currentState = STATES.IRRIGATE_SOIL;
       } else if (!isTankFull()) {
         currentState = STATES.FILL_TANK;
@@ -79,27 +75,21 @@ function updateState() {
 
     case STATES.IRRIGATE_SOIL:
       if (isSoilWet()) {
-        currentState = isTankFull()
-          ? STATES.IDLE
-          : STATES.FILL_TANK;
+        if (!isTankFull()) {
+          currentState = STATES.FILL_TANK;
+        } else {
+          currentState = STATES.IDLE;
+        }
       }
       break;
 
     case STATES.FILL_TANK:
       if (isTankFull()) {
-        currentState = isSoilDry()
-          ? STATES.IRRIGATE_SOIL
-          : STATES.IDLE;
-      }
-      break;
-
-    case STATES.PULSE_DISTRIBUTION:
-      if (isSoilWet()) {
-        currentState = isTankFull()
-          ? STATES.IDLE
-          : STATES.FILL_TANK;
-      } else if (isTankFull()) {
-        currentState = STATES.IRRIGATE_SOIL;
+        if (isSoilDry()) {
+          currentState = STATES.IRRIGATE_SOIL;
+        } else {
+          currentState = STATES.IDLE;
+        }
       }
       break;
   }
@@ -109,53 +99,34 @@ function updateState() {
 // FSM ACTIONS
 // ======================
 function decideByState() {
-  const now = Date.now();
-
   switch (currentState) {
 
+    // Soil kering → air ke soil
     case STATES.IRRIGATE_SOIL:
       return {
-        soil:  { action: "OFF", reason: "fsm_irrigate_soil" },
-        hidro: { action: "ON",  reason: "fsm_irrigate_soil" }
+        soil:  { action: "OFF", reason: "fsm_irrigate_soil" }, // solenoid CLOSE
+        hidro: { action: "ON",  reason: "fsm_irrigate_soil" }  // pompa ON
       };
 
+    // Isi bak
     case STATES.FILL_TANK:
       return {
-        soil:  { action: "ON",  reason: "fsm_fill_tank" },
-        hidro: { action: "ON",  reason: "fsm_fill_tank" }
+        soil:  { action: "ON",  reason: "fsm_fill_tank" }, // solenoid OPEN
+        hidro: { action: "ON",  reason: "fsm_fill_tank" }  // pompa ON
       };
 
-    case STATES.PULSE_DISTRIBUTION: {
-      const duration =
-        pulseTarget === "SOIL" ? PULSE_SOIL_MS : PULSE_TANK_MS;
-
-      if (now - lastPulseSwitch >= duration) {
-        pulseTarget = pulseTarget === "SOIL" ? "TANK" : "SOIL";
-        lastPulseSwitch = now;
-      }
-
-      return pulseTarget === "SOIL"
-        ? {
-            soil:  { action: "OFF", reason: "pulse_to_soil" },
-            hidro: { action: "ON",  reason: "pulse_to_soil" }
-          }
-        : {
-            soil:  { action: "ON",  reason: "pulse_to_tank" },
-            hidro: { action: "ON",  reason: "pulse_to_tank" }
-          };
-    }
-
+    // Aman
     case STATES.IDLE:
     default:
       return {
-        soil:  { action: "ON",  reason: "fsm_idle" },
-        hidro: { action: "OFF", reason: "fsm_idle" }
+        soil:  { action: "ON",  reason: "fsm_idle" }, // arah ke bak
+        hidro: { action: "OFF", reason: "fsm_idle" }  // pompa mati
       };
   }
 }
 
 // ======================
-// NUTRISI (UNCHANGED)
+// NUTRISI (TIDAK DIUBAH)
 // ======================
 function decidePumpNutrisi() {
   if (globalState.tds_ppm === null)
@@ -171,31 +142,99 @@ function decidePumpNutrisi() {
 }
 
 // ======================
+// DASHBOARD (OVERWRITE)
+// ======================
+function renderDashboard(fsmDecision, nutrisiDecision) {
+  console.clear();
+  console.log("=== HYDROPONIC CONTROL DASHBOARD ===");
+  console.log("Time:", new Date().toLocaleString());
+  console.log("FSM State:", currentState);
+
+  const soilValues = [...soilStates.values()];
+  const soilAvg =
+    soilValues.length > 0
+      ? (soilValues.reduce((a, b) => a + b, 0) / soilValues.length).toFixed(1)
+      : "-";
+
+  console.log("\n[ DECISION ]");
+  console.table([
+    {
+      Subsystem: "SOIL (SOLENOID)",
+      Action: fsmDecision.soil.action,
+      Reason: fsmDecision.soil.reason,
+      Value: soilAvg !== "-" ? `${soilAvg} %` : "-"
+    },
+    {
+      Subsystem: "HIDRO / SANYO",
+      Action: fsmDecision.hidro.action,
+      Reason: fsmDecision.hidro.reason,
+      Value:
+        globalState.distance_cm !== null
+          ? `${globalState.distance_cm} cm`
+          : "-"
+    },
+    {
+      Subsystem: "NUTRISI",
+      Action: nutrisiDecision.action,
+      Reason: nutrisiDecision.reason,
+      Value:
+        globalState.tds_ppm !== null
+          ? `${globalState.tds_ppm} ppm`
+          : "-"
+    }
+  ]);
+
+  console.log("[ PUMP STATUS ]");
+  console.table([
+    { Pump: "pump-soil (solenoid)", Status: lastPumpSoilState ?? "-" },
+    { Pump: "pump-hidroponic",      Status: lastPumpHidroState ?? "-" },
+    { Pump: "pump-nutrisi",         Status: lastPumpNutrisiState ?? "-" }
+  ]);
+}
+
+// ======================
 // PUBLISH RELAY (UNCHANGED)
 // ======================
 async function publishRelay(channel, {
-  pump, relay, topic, decision, lastState
+  pump,
+  relay,
+  topic,
+  decision,
+  lastState
 }) {
   const { action, reason } = decision;
-  if (action === "HOLD" || lastState === action) return;
+  if (action === "HOLD") return;
+  if (lastState === action) return;
 
-  const payload = { pump, relay, action, reason, timestamp: new Date() };
+  const payload = {
+    pump,
+    relay,
+    action,
+    reason,
+    timestamp: new Date()
+  };
 
-  channel.publish("amq.topic", topic, Buffer.from(JSON.stringify(payload)), {
-    persistent: true
-  });
+  channel.publish(
+    "amq.topic",
+    topic,
+    Buffer.from(JSON.stringify(payload)),
+    { persistent: true }
+  );
 
-  try { await PumpLog.create(payload); } catch (_) {}
+  try {
+    await PumpLog.create(payload);
+  } catch (_) {}
+
   return action;
 }
 
 // ======================
-// EVALUATION
+// EVALUATION ENGINE
 // ======================
 async function evaluate(channel) {
   updateState();
 
-  const fsmDecision = decideByState();
+  const fsmDecision      = decideByState();
   const nutrisiDecision = decidePumpNutrisi();
 
   const soilRes = await publishRelay(channel, {
@@ -225,10 +264,7 @@ async function evaluate(channel) {
   });
   if (nutrisiRes) lastPumpNutrisiState = nutrisiRes;
 
-  console.clear();
-  console.log("=== FSM + PULSE CONTROL ===");
-  console.log("State:", currentState);
-  console.log("Pulse Target:", pulseTarget);
+  renderDashboard(fsmDecision, nutrisiDecision);
 }
 
 // ======================
@@ -262,7 +298,7 @@ async function startConsumers() {
     channel.ack(msg);
   });
 
-  console.log("✅ FSM + PULSE CONTROLLER ACTIVE");
+  console.log("✅ FSM HYDROPONIC CONTROLLER ACTIVE");
 }
 
 module.exports = { startConsumers };

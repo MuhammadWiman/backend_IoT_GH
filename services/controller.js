@@ -1,4 +1,5 @@
 require("dotenv").config();
+const readline = require("readline"); // ✅ tambahan aman
 const { connectRabbit, getChannel } = require("./rabbit");
 const PumpLog = require("../models/PumpLog");
 
@@ -70,7 +71,7 @@ function isTankFull() {
 }
 
 // ======================
-// FSM TRANSITION (FIXED)
+// FSM TRANSITION
 // ======================
 function updateState() {
   if (manualSanyoActive) {
@@ -79,29 +80,21 @@ function updateState() {
   }
 
   switch (currentState) {
-
     case STATES.IDLE:
-      // ⛔ BELUM ADA DATA TANK → TETAP IDLE
       if (!hasTankData()) {
         currentState = STATES.IDLE;
-      }
-      // ADA DATA & BAK BELUM PENUH
-      else if (!isTankFull()) {
+      } else if (!isTankFull()) {
         currentState = STATES.FILL_TANK;
-      }
-      // BAK PENUH & SOIL KERING
-      else if (isSoilDry()) {
+      } else if (isSoilDry()) {
         currentState = STATES.IRRIGATE_SOIL;
       }
       break;
 
     case STATES.FILL_TANK:
       if (isTankFull()) {
-        if (isSoilDry()) {
-          currentState = STATES.IRRIGATE_SOIL;
-        } else {
-          currentState = STATES.IDLE;
-        }
+        currentState = isSoilDry()
+          ? STATES.IRRIGATE_SOIL
+          : STATES.IDLE;
       }
       break;
 
@@ -118,7 +111,6 @@ function updateState() {
 // ======================
 function decideByState() {
   switch (currentState) {
-
     case STATES.MANUAL_SANYO:
       return {
         soil:  { action: "OFF", reason: "manual_sanyo_keran" },
@@ -163,10 +155,12 @@ function decidePumpNutrisi() {
 }
 
 // ======================
-// DASHBOARD (TIDAK DIUBAH)
+// DASHBOARD (OVERWRITE AMAN)
 // ======================
 function renderDashboard(fsmDecision, nutrisiDecision) {
-  console.clear();
+  readline.cursorTo(process.stdout, 0, 0);
+  readline.clearScreenDown(process.stdout);
+
   console.log("=== HYDROPONIC CONTROL DASHBOARD ===");
   console.log("Time:", new Date().toLocaleString());
   console.log("FSM State:", currentState);
@@ -214,7 +208,7 @@ function renderDashboard(fsmDecision, nutrisiDecision) {
 }
 
 // ======================
-// PUBLISH RELAY (UNCHANGED)
+// PUBLISH RELAY
 // ======================
 async function publishRelay(channel, {
   pump, relay, topic, decision, lastState
@@ -275,7 +269,7 @@ async function evaluate(channel) {
 }
 
 // ======================
-// CONSUMERS (TIDAK DIUBAH)
+// CONSUMERS
 // ======================
 async function startConsumers() {
   await connectRabbit();

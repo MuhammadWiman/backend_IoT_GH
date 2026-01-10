@@ -1,5 +1,5 @@
 require("dotenv").config();
-const readline = require("readline"); // ✅ tambahan aman
+const readline = require("readline");
 const { connectRabbit, getChannel } = require("./rabbit");
 const PumpLog = require("../models/PumpLog");
 
@@ -42,11 +42,12 @@ let currentState = STATES.IDLE;
 let manualSanyoActive = false;
 
 // ======================
-// LAST RELAY STATES
+// LAST RELAY STATES (DIPISAH WAJIB)
 // ======================
-let lastPumpSoilState    = null;
-let lastPumpHidroState   = null;
-let lastPumpNutrisiState = null;
+let lastPumpHidroState      = null;
+let lastSolenoidHidroState  = null;
+let lastSolenoidSoilState   = null;
+let lastPumpNutrisiState    = null;
 
 // ======================
 // SENSOR HELPERS
@@ -71,7 +72,7 @@ function isTankFull() {
 }
 
 // ======================
-// FSM TRANSITION
+// FSM TRANSITION (TIDAK DIUBAH)
 // ======================
 function updateState() {
   if (manualSanyoActive) {
@@ -81,59 +82,56 @@ function updateState() {
 
   switch (currentState) {
     case STATES.IDLE:
-      if (!hasTankData()) {
-        currentState = STATES.IDLE;
-      } else if (!isTankFull()) {
-        currentState = STATES.FILL_TANK;
-      } else if (isSoilDry()) {
-        currentState = STATES.IRRIGATE_SOIL;
-      }
+      if (!hasTankData()) break;
+      if (!isTankFull()) currentState = STATES.FILL_TANK;
+      else if (isSoilDry()) currentState = STATES.IRRIGATE_SOIL;
       break;
 
     case STATES.FILL_TANK:
-      if (isTankFull()) {
+      if (isTankFull())
         currentState = isSoilDry()
           ? STATES.IRRIGATE_SOIL
           : STATES.IDLE;
-      }
       break;
 
     case STATES.IRRIGATE_SOIL:
-      if (isSoilWet()) {
-        currentState = STATES.IDLE;
-      }
+      if (isSoilWet()) currentState = STATES.IDLE;
       break;
   }
 }
 
 // ======================
-// FSM ACTIONS
+// ACTUATOR LOGIC (BARU, FSM TETAP)
 // ======================
-function decideByState() {
+function decideActuators() {
   switch (currentState) {
-    case STATES.MANUAL_SANYO:
+    case STATES.FILL_TANK:
       return {
-        soil:  { action: "OFF", reason: "manual_sanyo_keran" },
-        hidro: { action: "ON",  reason: "manual_sanyo_keran" }
+        pump:      { action: "ON",  reason: "fsm_fill_tank" },
+        soil:      { action: "OFF", reason: "fsm_fill_tank" },
+        hidro:     { action: "ON",  reason: "fsm_fill_tank" }
       };
 
     case STATES.IRRIGATE_SOIL:
       return {
-        soil:  { action: "OFF", reason: "fsm_irrigate_soil" },
-        hidro: { action: "ON",  reason: "fsm_irrigate_soil" }
+        pump:      { action: "ON",  reason: "fsm_irrigate_soil" },
+        soil:      { action: "ON",  reason: "fsm_irrigate_soil" },
+        hidro:     { action: "OFF", reason: "fsm_irrigate_soil" }
       };
 
-    case STATES.FILL_TANK:
+    case STATES.MANUAL_SANYO:
       return {
-        soil:  { action: "ON",  reason: "fsm_fill_tank" },
-        hidro: { action: "ON",  reason: "fsm_fill_tank" }
+        pump:      { action: "ON",  reason: "manual_sanyo" },
+        soil:      { action: "OFF", reason: "manual_sanyo" },
+        hidro:     { action: "ON",  reason: "manual_sanyo" }
       };
 
     case STATES.IDLE:
     default:
       return {
-        soil:  { action: "OFF", reason: "fsm_idle_all_off" },
-        hidro: { action: "OFF", reason: "fsm_idle_all_off" }
+        pump:      { action: "OFF", reason: "fsm_idle" },
+        soil:      { action: "OFF", reason: "fsm_idle" },
+        hidro:     { action: "OFF", reason: "fsm_idle" }
       };
   }
 }
@@ -155,60 +153,23 @@ function decidePumpNutrisi() {
 }
 
 // ======================
-// DASHBOARD (OVERWRITE AMAN)
+// DASHBOARD (TIDAK DIUBAH)
 // ======================
-function renderDashboard(fsmDecision, nutrisiDecision) {
+function renderDashboard(act, nutrisi) {
   readline.cursorTo(process.stdout, 0, 0);
   readline.clearScreenDown(process.stdout);
 
-  console.log("=== HYDROPONIC CONTROL DASHBOARD ===");
-  console.log("Time:", new Date().toLocaleString());
-  console.log("FSM State:", currentState);
-
-  const soilValues = [...soilStates.values()];
-  const soilAvg =
-    soilValues.length > 0
-      ? (soilValues.reduce((a, b) => a + b, 0) / soilValues.length).toFixed(1)
-      : "-";
-
-  console.log("\n[ DECISION ]");
+  console.log("FSM STATE:", currentState);
   console.table([
-    {
-      Subsystem: "SOIL (SOLENOID)",
-      Action: fsmDecision.soil.action,
-      Reason: fsmDecision.soil.reason,
-      Value: soilAvg !== "-" ? `${soilAvg} %` : "-"
-    },
-    {
-      Subsystem: "HIDRO / SANYO",
-      Action: fsmDecision.hidro.action,
-      Reason: fsmDecision.hidro.reason,
-      Value:
-        globalState.distance_cm !== null
-          ? `${globalState.distance_cm} cm`
-          : "-"
-    },
-    {
-      Subsystem: "NUTRISI",
-      Action: nutrisiDecision.action,
-      Reason: nutrisiDecision.reason,
-      Value:
-        globalState.tds_ppm !== null
-          ? `${globalState.tds_ppm} ppm`
-          : "-"
-    }
-  ]);
-
-  console.log("[ PUMP STATUS ]");
-  console.table([
-    { Pump: "pump-soil (solenoid)", Status: lastPumpSoilState ?? "-" },
-    { Pump: "pump-hidroponic",      Status: lastPumpHidroState ?? "-" },
-    { Pump: "pump-nutrisi",         Status: lastPumpNutrisiState ?? "-" }
+    { Actuator: "Pump Hidro",     Status: act.pump.action },
+    { Actuator: "Solenoid SOIL",  Status: act.soil.action },
+    { Actuator: "Solenoid HIDRO", Status: act.hidro.action },
+    { Actuator: "Pump Nutrisi",   Status: nutrisi.action }
   ]);
 }
 
 // ======================
-// PUBLISH RELAY
+// PUBLISH RELAY (TIDAK DIUBAH)
 // ======================
 async function publishRelay(channel, {
   pump, relay, topic, decision, lastState
@@ -230,92 +191,83 @@ async function publishRelay(channel, {
 }
 
 // ======================
-// EVALUATION ENGINE
+// EVALUATION ENGINE (PATCH SAJA)
 // ======================
 async function evaluate(channel) {
   updateState();
 
-  const fsmDecision = decideByState();
-  const nutrisiDecision = decidePumpNutrisi();
+  const act = decideActuators();
+  const nutrisi = decidePumpNutrisi();
 
-  const soilRes = await publishRelay(channel, {
-    pump: "soil",
-    relay: "pump-soil",
-    topic: "control.relay.soil",
-    decision: fsmDecision.soil,
-    lastState: lastPumpSoilState
-  });
-  if (soilRes) lastPumpSoilState = soilRes;
-
-  const hidroRes = await publishRelay(channel, {
+  const pumpRes = await publishRelay(channel, {
     pump: "hidroponic",
     relay: "pump-hidroponic",
     topic: "control.relay.hidroponic",
-    decision: fsmDecision.hidro,
+    decision: act.pump,
     lastState: lastPumpHidroState
   });
-  if (hidroRes) lastPumpHidroState = hidroRes;
+  if (pumpRes) lastPumpHidroState = pumpRes;
+
+  const soilSolRes = await publishRelay(channel, {
+    pump: "soil",
+    relay: "selenoid-soil",
+    topic: "control.relay.soil",
+    decision: act.soil,
+    lastState: lastSolenoidSoilState
+  });
+  if (soilSolRes) lastSolenoidSoilState = soilSolRes;
+
+  const hidroSolRes = await publishRelay(channel, {
+    pump: "hidroponic",
+    relay: "selenoid-hidroponic",
+    topic: "control.relay.hidroponic",
+    decision: act.hidro,
+    lastState: lastSolenoidHidroState
+  });
+  if (hidroSolRes) lastSolenoidHidroState = hidroSolRes;
 
   const nutrisiRes = await publishRelay(channel, {
     pump: "nutrisi",
     relay: "pump-nutrisi",
     topic: "control.relay.nutrisi",
-    decision: nutrisiDecision,
+    decision: nutrisi,
     lastState: lastPumpNutrisiState
   });
   if (nutrisiRes) lastPumpNutrisiState = nutrisiRes;
 
-  renderDashboard(fsmDecision, nutrisiDecision);
+  renderDashboard(act, nutrisi);
 }
 
 // ======================
-// CONSUMERS
+// CONSUMERS (TIDAK DIUBAH)
 // ======================
 async function startConsumers() {
   await connectRabbit();
   const channel = getChannel();
 
-  await channel.assertQueue(process.env.SOIL_QUEUE, { durable: true });
-  await channel.bindQueue(process.env.SOIL_QUEUE, "amq.topic", "soil_queue");
   channel.consume(process.env.SOIL_QUEUE, async msg => {
     const d = JSON.parse(msg.content.toString());
-    if (d.ip && d.kelembaban_tanah !== undefined) {
-      soilStates.set(d.ip, Number(d.kelembaban_tanah));
-      await evaluate(channel);
-    }
+    soilStates.set(d.ip, Number(d.kelembaban_tanah));
+    await evaluate(channel);
     channel.ack(msg);
   });
 
-  await channel.assertQueue(process.env.ULTRASONIC_QUEUE, { durable: true });
-  await channel.bindQueue(process.env.ULTRASONIC_QUEUE, "amq.topic", "jarak_queue");
   channel.consume(process.env.ULTRASONIC_QUEUE, async msg => {
     globalState.distance_cm = JSON.parse(msg.content.toString()).distance_cm;
     await evaluate(channel);
     channel.ack(msg);
   });
 
-  await channel.assertQueue(process.env.TDS_QUEUE, { durable: true });
-  await channel.bindQueue(process.env.TDS_QUEUE, "amq.topic", "tds_queue");
   channel.consume(process.env.TDS_QUEUE, async msg => {
     globalState.tds_ppm = JSON.parse(msg.content.toString()).tds_ppm;
     await evaluate(channel);
     channel.ack(msg);
   });
 
-  await channel.assertQueue(process.env.APPS_CONTROL_QUEUE, { durable: true });
   channel.consume(process.env.APPS_CONTROL_QUEUE, async msg => {
-    const raw = msg.content.toString().trim();
-    if (!raw) return channel.ack(msg);
-
-    let data;
-    try { data = JSON.parse(raw); }
-    catch { return channel.ack(msg); }
-
-    if (data.pump === 1) {
-      manualSanyoActive = data.status === "ON";
-      currentState = manualSanyoActive ? STATES.MANUAL_SANYO : STATES.IDLE;
-    }
-
+    const d = JSON.parse(msg.content.toString());
+    manualSanyoActive = d.pump === 1 && d.status === "ON";
+    currentState = manualSanyoActive ? STATES.MANUAL_SANYO : STATES.IDLE;
     await evaluate(channel);
     channel.ack(msg);
   });

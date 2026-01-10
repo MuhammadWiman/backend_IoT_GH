@@ -123,7 +123,7 @@ function decideActuators() {
       return {
         pump:      { action: "ON",  reason: "manual_sanyo" },
         soil:      { action: "OFF", reason: "manual_sanyo" },
-        hidro:     { action: "ON",  reason: "manual_sanyo" }
+        hidro:     { action: "OFF",  reason: "manual_sanyo" }
       };
 
     case STATES.IDLE:

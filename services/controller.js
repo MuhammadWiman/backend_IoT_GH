@@ -15,6 +15,12 @@ const SOIL_DRY = 40;
 const SOIL_WET = 60;
 
 // ======================
+// ACTUATOR SAFETY CONFIG (BARU)
+// ======================
+const PUMP_MAX_ON_MS    = 3 * 60 * 1000; // 3 menit
+const PUMP_COOLDOWN_MS  = 2 * 60 * 1000; // 2 menit
+
+// ======================
 // GLOBAL STATES
 // ======================
 const globalState = {
@@ -42,12 +48,23 @@ let currentState = STATES.IDLE;
 let manualSanyoActive = false;
 
 // ======================
-// LAST RELAY STATES (DIPISAH WAJIB)
+// LAST RELAY STATES
 // ======================
 let lastPumpHidroState      = null;
 let lastSolenoidHidroState  = null;
 let lastSolenoidSoilState   = null;
 let lastPumpNutrisiState    = null;
+
+// ======================
+// ACTUATOR RUNTIME STATE (BARU)
+// ======================
+const actuatorRuntime = {
+  pump: {
+    isOn: false,
+    lastOnAt: null,
+    cooldownUntil: null
+  }
+};
 
 // ======================
 // SENSOR HELPERS
@@ -101,39 +118,77 @@ function updateState() {
 }
 
 // ======================
-// ACTUATOR LOGIC (BARU, FSM TETAP)
+// ACTUATOR LOGIC (TIDAK DIUBAH)
 // ======================
 function decideActuators() {
   switch (currentState) {
     case STATES.FILL_TANK:
       return {
-        pump:      { action: "ON",  reason: "fsm_fill_tank" },
-        soil:      { action: "OFF", reason: "fsm_fill_tank" },
-        hidro:     { action: "ON",  reason: "fsm_fill_tank" }
+        pump:  { action: "ON",  reason: "fsm_fill_tank" },
+        soil:  { action: "OFF", reason: "fsm_fill_tank" },
+        hidro: { action: "ON",  reason: "fsm_fill_tank" }
       };
 
     case STATES.IRRIGATE_SOIL:
       return {
-        pump:      { action: "ON",  reason: "fsm_irrigate_soil" },
-        soil:      { action: "ON",  reason: "fsm_irrigate_soil" },
-        hidro:     { action: "OFF", reason: "fsm_irrigate_soil" }
+        pump:  { action: "ON",  reason: "fsm_irrigate_soil" },
+        soil:  { action: "ON",  reason: "fsm_irrigate_soil" },
+        hidro: { action: "OFF", reason: "fsm_irrigate_soil" }
       };
 
     case STATES.MANUAL_SANYO:
       return {
-        pump:      { action: "ON",  reason: "manual_sanyo" },
-        soil:      { action: "OFF", reason: "manual_sanyo" },
-        hidro:     { action: "OFF",  reason: "manual_sanyo" }
+        pump:  { action: "ON",  reason: "manual_sanyo" },
+        soil:  { action: "OFF", reason: "manual_sanyo" },
+        hidro: { action: "OFF", reason: "manual_sanyo" }
       };
 
     case STATES.IDLE:
     default:
       return {
-        pump:      { action: "OFF", reason: "fsm_idle" },
-        soil:      { action: "OFF", reason: "fsm_idle" },
-        hidro:     { action: "OFF", reason: "fsm_idle" }
+        pump:  { action: "OFF", reason: "fsm_idle" },
+        soil:  { action: "OFF", reason: "fsm_idle" },
+        hidro: { action: "OFF", reason: "fsm_idle" }
       };
   }
+}
+
+// ======================
+// ACTUATOR SAFETY LAYER (BARU, KUNCI)
+// ======================
+function applyActuatorSafety(act) {
+  const now = Date.now();
+
+  // 1️⃣ Mutual exclusion solenoid
+  if (act.soil.action === "ON" && act.hidro.action === "ON") {
+    act.soil.action = "OFF";
+    act.hidro.action = "OFF";
+  }
+
+  // 2️⃣ Pompa ON harus ada jalur air
+  if (act.pump.action === "ON") {
+    if (act.soil.action !== "ON" && act.hidro.action !== "ON") {
+      act.pump.action = "OFF";
+    }
+  }
+
+  // 3️⃣ Cooldown
+  if (
+    actuatorRuntime.pump.cooldownUntil &&
+    now < actuatorRuntime.pump.cooldownUntil
+  ) {
+    act.pump.action = "OFF";
+  }
+
+  // 4️⃣ Max ON time
+  if (actuatorRuntime.pump.isOn) {
+    if (now - actuatorRuntime.pump.lastOnAt > PUMP_MAX_ON_MS) {
+      act.pump.action = "OFF";
+      actuatorRuntime.pump.cooldownUntil = now + PUMP_COOLDOWN_MS;
+    }
+  }
+
+  return act;
 }
 
 // ======================
@@ -191,13 +246,24 @@ async function publishRelay(channel, {
 }
 
 // ======================
-// EVALUATION ENGINE (PATCH SAJA)
+// EVALUATION ENGINE (DITAMBAH SAFETY)
 // ======================
 async function evaluate(channel) {
   updateState();
 
-  const act = decideActuators();
+  let act = decideActuators();
+  act = applyActuatorSafety(act);
+
   const nutrisi = decidePumpNutrisi();
+
+  // ---- runtime update ----
+  if (act.pump.action === "ON" && !actuatorRuntime.pump.isOn) {
+    actuatorRuntime.pump.isOn = true;
+    actuatorRuntime.pump.lastOnAt = Date.now();
+  }
+  if (act.pump.action === "OFF" && actuatorRuntime.pump.isOn) {
+    actuatorRuntime.pump.isOn = false;
+  }
 
   const pumpRes = await publishRelay(channel, {
     pump: "hidroponic",

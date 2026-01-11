@@ -15,10 +15,10 @@ const SOIL_DRY = 40;
 const SOIL_WET = 60;
 
 // ======================
-// ACTUATOR SAFETY CONFIG (BARU)
+// PUMP SAFETY CONFIG (FINAL)
 // ======================
-const PUMP_MAX_ON_MS    = 3 * 60 * 1000; // 3 menit
-const PUMP_COOLDOWN_MS  = 2 * 60 * 1000; // 2 menit
+const PUMP_ON_MS       = 8 * 60 * 1000;   // 8 menit ON
+const PUMP_COOLDOWN_MS = 1 * 60 * 1000;   // 3 menit OFF
 
 // ======================
 // GLOBAL STATES
@@ -41,55 +41,43 @@ const STATES = {
 };
 
 let currentState = STATES.IDLE;
-
-// ======================
-// MANUAL FLAG
-// ======================
 let manualSanyoActive = false;
 
 // ======================
 // LAST RELAY STATES
 // ======================
-let lastPumpHidroState      = null;
-let lastSolenoidHidroState  = null;
-let lastSolenoidSoilState   = null;
-let lastPumpNutrisiState    = null;
+let lastPumpHidroState     = null;
+let lastSolenoidSoilState  = null;
+let lastSolenoidHidroState = null;
+let lastPumpNutrisiState   = null;
 
 // ======================
-// ACTUATOR RUNTIME STATE (BARU)
+// PUMP RUNTIME STATE
 // ======================
-const actuatorRuntime = {
-  pump: {
-    isOn: false,
-    lastOnAt: null,
-    cooldownUntil: null
-  }
+const pumpRuntime = {
+  isOn: false,
+  onSince: 0,
+  cooldownUntil: 0
 };
 
 // ======================
 // SENSOR HELPERS
 // ======================
-function hasTankData() {
-  return globalState.distance_cm !== null;
-}
+const hasTankData = () => globalState.distance_cm !== null;
 
-function isSoilDry() {
-  return soilStates.size > 0 &&
-    [...soilStates.values()].some(v => v < SOIL_DRY);
-}
+const isSoilDry = () =>
+  soilStates.size > 0 &&
+  [...soilStates.values()].some(v => v < SOIL_DRY);
 
-function isSoilWet() {
-  return soilStates.size > 0 &&
-    [...soilStates.values()].every(v => v >= SOIL_WET);
-}
+const isSoilWet = () =>
+  soilStates.size > 0 &&
+  [...soilStates.values()].every(v => v >= SOIL_WET);
 
-function isTankFull() {
-  return hasTankData() &&
-    globalState.distance_cm <= TANK_FULL_MAX;
-}
+const isTankFull = () =>
+  hasTankData() && globalState.distance_cm <= TANK_FULL_MAX;
 
 // ======================
-// FSM TRANSITION (TIDAK DIUBAH)
+// FSM TRANSITION (ASLI)
 // ======================
 function updateState() {
   if (manualSanyoActive) {
@@ -118,7 +106,7 @@ function updateState() {
 }
 
 // ======================
-// ACTUATOR LOGIC (TIDAK DIUBAH)
+// FSM ACTUATOR DECISION
 // ======================
 function decideActuators() {
   switch (currentState) {
@@ -143,7 +131,6 @@ function decideActuators() {
         hidro: { action: "OFF", reason: "manual_sanyo" }
       };
 
-    case STATES.IDLE:
     default:
       return {
         pump:  { action: "OFF", reason: "fsm_idle" },
@@ -154,187 +141,182 @@ function decideActuators() {
 }
 
 // ======================
-// ACTUATOR SAFETY LAYER (BARU, KUNCI)
+// PUMP CYCLE CONTROLLER (FINAL)
 // ======================
-function applyActuatorSafety(act) {
+function enforcePumpCycle(requestedAction) {
   const now = Date.now();
 
-  // 1️⃣ Mutual exclusion solenoid
-  if (act.soil.action === "ON" && act.hidro.action === "ON") {
-    act.soil.action = "OFF";
-    act.hidro.action = "OFF";
+  // cooldown aktif
+  if (now < pumpRuntime.cooldownUntil) {
+    return "OFF";
   }
 
-  // 2️⃣ Pompa ON harus ada jalur air
-  if (act.pump.action === "ON") {
-    if (act.soil.action !== "ON" && act.hidro.action !== "ON") {
-      act.pump.action = "OFF";
-    }
+  // OFF → ON
+  if (requestedAction === "ON" && !pumpRuntime.isOn) {
+    pumpRuntime.isOn = true;
+    pumpRuntime.onSince = now;
+    return "ON";
   }
 
-  // 3️⃣ Cooldown
-  if (
-    actuatorRuntime.pump.cooldownUntil &&
-    now < actuatorRuntime.pump.cooldownUntil
-  ) {
-    act.pump.action = "OFF";
+  // sedang ON
+  if (pumpRuntime.isOn) {
+    const runtime = now - pumpRuntime.onSince;
+
+    // belum 8 menit → tetap ON
+    if (runtime < PUMP_ON_MS) return "ON";
+
+    // selesai 8 menit → OFF + cooldown
+    pumpRuntime.isOn = false;
+    pumpRuntime.cooldownUntil = now + PUMP_COOLDOWN_MS;
+    return "OFF";
   }
 
-  // 4️⃣ Max ON time
-  if (actuatorRuntime.pump.isOn) {
-    if (now - actuatorRuntime.pump.lastOnAt > PUMP_MAX_ON_MS) {
-      act.pump.action = "OFF";
-      actuatorRuntime.pump.cooldownUntil = now + PUMP_COOLDOWN_MS;
-    }
-  }
-
-  return act;
+  return "OFF";
 }
 
 // ======================
-// NUTRISI (TIDAK DIUBAH)
+// NUTRISI (ASLI)
 // ======================
 function decidePumpNutrisi() {
-  if (globalState.tds_ppm === null)
-    return { action: "OFF", reason: "no_tds_data" };
-
-  if (globalState.tds_ppm < 1 || globalState.tds_ppm > 3000)
-    return { action: "OFF", reason: "tds_invalid" };
-
-  if (globalState.tds_ppm < 79)
-    return { action: "ON", reason: "tds_low" };
-
+  if (globalState.tds_ppm === null) return { action: "OFF", reason: "no_tds" };
+  if (globalState.tds_ppm < 79) return { action: "ON", reason: "tds_low" };
   return { action: "OFF", reason: "tds_ok" };
 }
 
 // ======================
-// DASHBOARD (TIDAK DIUBAH)
+// DASHBOARD + LOG COOLDOWN
 // ======================
 function renderDashboard(act, nutrisi) {
   readline.cursorTo(process.stdout, 0, 0);
   readline.clearScreenDown(process.stdout);
 
+  const now = Date.now();
+  const cooldownLeft =
+    pumpRuntime.cooldownUntil > now
+      ? Math.ceil((pumpRuntime.cooldownUntil - now) / 1000)
+      : 0;
+
   console.log("FSM STATE:", currentState);
   console.table([
-    { Actuator: "Pump Hidro",     Status: act.pump.action },
+    { Actuator: "Pump Sanyo",     Status: act.pump.action },
     { Actuator: "Solenoid SOIL",  Status: act.soil.action },
     { Actuator: "Solenoid HIDRO", Status: act.hidro.action },
     { Actuator: "Pump Nutrisi",   Status: nutrisi.action }
   ]);
+
+  console.log("PUMP CYCLE STATUS:");
+  console.table([{
+    isOn: pumpRuntime.isOn,
+    on_seconds: pumpRuntime.isOn
+      ? Math.floor((now - pumpRuntime.onSince) / 1000)
+      : 0,
+    cooldown_seconds: cooldownLeft
+  }]);
 }
 
 // ======================
-// PUBLISH RELAY (TIDAK DIUBAH)
+// PUBLISH RELAY
 // ======================
 async function publishRelay(channel, {
   pump, relay, topic, decision, lastState
 }) {
-  const { action, reason } = decision;
-  if (lastState === action) return;
+  if (lastState === decision.action) return lastState;
 
-  const payload = { pump, relay, action, reason, timestamp: new Date() };
+  const payload = {
+    pump,
+    relay,
+    action: decision.action,
+    reason: decision.reason,
+    timestamp: new Date()
+  };
 
   channel.publish(
     "amq.topic",
     topic,
-    Buffer.from(JSON.stringify(payload)),
-    { persistent: true }
+    Buffer.from(JSON.stringify(payload))
   );
 
   try { await PumpLog.create(payload); } catch (_) {}
-  return action;
+  return decision.action;
 }
 
 // ======================
-// EVALUATION ENGINE (DITAMBAH SAFETY)
+// EVALUATION ENGINE
 // ======================
 async function evaluate(channel) {
   updateState();
 
-  let act = decideActuators();
-  act = applyActuatorSafety(act);
+  const act = decideActuators();
+  act.pump.action = enforcePumpCycle(act.pump.action);
 
   const nutrisi = decidePumpNutrisi();
 
-  // ---- runtime update ----
-  if (act.pump.action === "ON" && !actuatorRuntime.pump.isOn) {
-    actuatorRuntime.pump.isOn = true;
-    actuatorRuntime.pump.lastOnAt = Date.now();
-  }
-  if (act.pump.action === "OFF" && actuatorRuntime.pump.isOn) {
-    actuatorRuntime.pump.isOn = false;
-  }
-
-  const pumpRes = await publishRelay(channel, {
+  lastPumpHidroState = await publishRelay(channel, {
     pump: "hidroponic",
     relay: "pump-hidroponic",
     topic: "control.relay.hidroponic",
     decision: act.pump,
     lastState: lastPumpHidroState
   });
-  if (pumpRes) lastPumpHidroState = pumpRes;
 
-  const soilSolRes = await publishRelay(channel, {
+  lastSolenoidSoilState = await publishRelay(channel, {
     pump: "soil",
     relay: "selenoid-soil",
     topic: "control.relay.soil",
     decision: act.soil,
     lastState: lastSolenoidSoilState
   });
-  if (soilSolRes) lastSolenoidSoilState = soilSolRes;
 
-  const hidroSolRes = await publishRelay(channel, {
+  lastSolenoidHidroState = await publishRelay(channel, {
     pump: "hidroponic",
     relay: "selenoid-hidroponic",
     topic: "control.relay.hidroponic",
     decision: act.hidro,
     lastState: lastSolenoidHidroState
   });
-  if (hidroSolRes) lastSolenoidHidroState = hidroSolRes;
 
-  const nutrisiRes = await publishRelay(channel, {
+  lastPumpNutrisiState = await publishRelay(channel, {
     pump: "nutrisi",
     relay: "pump-nutrisi",
     topic: "control.relay.nutrisi",
     decision: nutrisi,
     lastState: lastPumpNutrisiState
   });
-  if (nutrisiRes) lastPumpNutrisiState = nutrisiRes;
 
   renderDashboard(act, nutrisi);
 }
 
 // ======================
-// CONSUMERS (TIDAK DIUBAH)
+// CONSUMERS
 // ======================
 async function startConsumers() {
   await connectRabbit();
   const channel = getChannel();
 
-  channel.consume(process.env.SOIL_QUEUE, async msg => {
+  channel.consume(process.env.SOIL_QUEUE, msg => {
     const d = JSON.parse(msg.content.toString());
-    soilStates.set(d.ip, Number(d.kelembaban_tanah));
-    await evaluate(channel);
+    soilStates.set(d.ip, d.kelembaban_tanah);
+    evaluate(channel);
     channel.ack(msg);
   });
 
-  channel.consume(process.env.ULTRASONIC_QUEUE, async msg => {
+  channel.consume(process.env.ULTRASONIC_QUEUE, msg => {
     globalState.distance_cm = JSON.parse(msg.content.toString()).distance_cm;
-    await evaluate(channel);
+    evaluate(channel);
     channel.ack(msg);
   });
 
-  channel.consume(process.env.TDS_QUEUE, async msg => {
+  channel.consume(process.env.TDS_QUEUE, msg => {
     globalState.tds_ppm = JSON.parse(msg.content.toString()).tds_ppm;
-    await evaluate(channel);
+    evaluate(channel);
     channel.ack(msg);
   });
 
-  channel.consume(process.env.APPS_CONTROL_QUEUE, async msg => {
+  channel.consume(process.env.APPS_CONTROL_QUEUE, msg => {
     const d = JSON.parse(msg.content.toString());
     manualSanyoActive = d.pump === 1 && d.status === "ON";
     currentState = manualSanyoActive ? STATES.MANUAL_SANYO : STATES.IDLE;
-    await evaluate(channel);
+    evaluate(channel);
     channel.ack(msg);
   });
 

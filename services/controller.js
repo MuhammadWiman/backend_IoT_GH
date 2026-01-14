@@ -17,8 +17,8 @@ const SOIL_WET = 60;
 // ======================
 // PUMP SAFETY CONFIG (FINAL)
 // ======================
-const PUMP_ON_MS       = 8 * 60 * 1000;   // 8 menit ON
-const PUMP_COOLDOWN_MS = 1 * 60 * 1000;   // 3 menit OFF
+const PUMP_ON_MS       =  30 * 1000;   // 8 menit ON
+const PUMP_COOLDOWN_MS =  30 * 1000;   // 3 menit OFF
 
 // ======================
 // GLOBAL STATES
@@ -179,7 +179,7 @@ function enforcePumpCycle(requestedAction) {
 // ======================
 function decidePumpNutrisi() {
   if (globalState.tds_ppm === null) return { action: "OFF", reason: "no_tds" };
-  if (globalState.tds_ppm < 79) return { action: "ON", reason: "tds_low" };
+  if (globalState.tds_ppm < 150) return { action: "ON", reason: "tds_low" };
   return { action: "OFF", reason: "tds_ok" };
 }
 
@@ -261,7 +261,7 @@ async function evaluate(channel) {
 
   lastSolenoidSoilState = await publishRelay(channel, {
     pump: "soil",
-    relay: "selenoid-soil",
+    relay: "pump-soil",
     topic: "control.relay.soil",
     decision: act.soil,
     lastState: lastSolenoidSoilState

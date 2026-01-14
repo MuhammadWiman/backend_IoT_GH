@@ -15,10 +15,15 @@ const SOIL_DRY = 40;
 const SOIL_WET = 60;
 
 // ======================
-// PUMP SAFETY CONFIG (FINAL)
+// PUMP SAFETY CONFIG
 // ======================
-const PUMP_ON_MS       =  30 * 1000;   // 8 menit ON
-const PUMP_COOLDOWN_MS =  30 * 1000;   // 3 menit OFF
+const PUMP_ON_MS       = 30 * 1000;
+const PUMP_COOLDOWN_MS = 30 * 1000;
+
+// ======================
+// LOG INTERVAL (6 JAM)
+// ======================
+const LOG_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 // ======================
 // GLOBAL STATES
@@ -29,6 +34,11 @@ const globalState = {
 };
 
 const soilStates = new Map();
+
+// ======================
+// LAST LOG TIME (PER RELAY)
+// ======================
+const lastLogTime = new Map();
 
 // ======================
 // FSM STATES
@@ -77,7 +87,7 @@ const isTankFull = () =>
   hasTankData() && globalState.distance_cm <= TANK_FULL_MAX;
 
 // ======================
-// FSM TRANSITION (ASLI)
+// FSM TRANSITION
 // ======================
 function updateState() {
   if (manualSanyoActive) {
@@ -141,31 +151,23 @@ function decideActuators() {
 }
 
 // ======================
-// PUMP CYCLE CONTROLLER (FINAL)
+// PUMP CYCLE CONTROLLER
 // ======================
 function enforcePumpCycle(requestedAction) {
   const now = Date.now();
 
-  // cooldown aktif
-  if (now < pumpRuntime.cooldownUntil) {
-    return "OFF";
-  }
+  if (now < pumpRuntime.cooldownUntil) return "OFF";
 
-  // OFF → ON
   if (requestedAction === "ON" && !pumpRuntime.isOn) {
     pumpRuntime.isOn = true;
     pumpRuntime.onSince = now;
     return "ON";
   }
 
-  // sedang ON
   if (pumpRuntime.isOn) {
     const runtime = now - pumpRuntime.onSince;
-
-    // belum 8 menit → tetap ON
     if (runtime < PUMP_ON_MS) return "ON";
 
-    // selesai 8 menit → OFF + cooldown
     pumpRuntime.isOn = false;
     pumpRuntime.cooldownUntil = now + PUMP_COOLDOWN_MS;
     return "OFF";
@@ -175,7 +177,7 @@ function enforcePumpCycle(requestedAction) {
 }
 
 // ======================
-// NUTRISI (ASLI)
+// NUTRISI
 // ======================
 function decidePumpNutrisi() {
   if (globalState.tds_ppm === null) return { action: "OFF", reason: "no_tds" };
@@ -184,7 +186,21 @@ function decidePumpNutrisi() {
 }
 
 // ======================
-// DASHBOARD + LOG COOLDOWN
+// LOG RATE LIMITER
+// ======================
+function shouldSaveLog(relay) {
+  const now = Date.now();
+  const last = lastLogTime.get(relay) || 0;
+
+  if (now - last >= LOG_INTERVAL_MS) {
+    lastLogTime.set(relay, now);
+    return true;
+  }
+  return false;
+}
+
+// ======================
+// DASHBOARD
 // ======================
 function renderDashboard(act, nutrisi) {
   readline.cursorTo(process.stdout, 0, 0);
@@ -215,7 +231,7 @@ function renderDashboard(act, nutrisi) {
 }
 
 // ======================
-// PUBLISH RELAY
+// PUBLISH RELAY (LOG 6 JAM)
 // ======================
 async function publishRelay(channel, {
   pump, relay, topic, decision, lastState
@@ -236,7 +252,12 @@ async function publishRelay(channel, {
     Buffer.from(JSON.stringify(payload))
   );
 
-  try { await PumpLog.create(payload); } catch (_) {}
+  if (shouldSaveLog(relay)) {
+    try {
+      await PumpLog.create(payload);
+    } catch (_) {}
+  }
+
   return decision.action;
 }
 

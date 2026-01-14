@@ -12,7 +12,7 @@ const TANK_FULL_MAX = 15;
 // CONFIG SOIL
 // ======================
 const SOIL_DRY = 40;
-const SOIL_WET = 60;
+const SOIL_WET = 50;
 
 // ======================
 // PUMP SAFETY CONFIG (FINAL)

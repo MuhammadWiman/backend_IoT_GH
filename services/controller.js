@@ -1,7 +1,7 @@
 require("dotenv").config();
 const readline = require("readline");
 const { connectRabbit, getChannel } = require("./rabbit");
-const ActuatorHistory = require("../models/actuatorHistory");
+const ActuatorHistory = require("../models/ActuatorHistory");
 
 // ======================
 // CONFIG LEVEL AIR

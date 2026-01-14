@@ -1,6 +1,6 @@
 const mongoose = require("mongoose");
 
-const PumpLogSchema = new mongoose.Schema({
+const ActuatorHistorySchema = new mongoose.Schema({
   action: {
     type: String,
     enum: ["ON", "OFF"],
@@ -12,7 +12,7 @@ const PumpLogSchema = new mongoose.Schema({
   },
   reason: {
     type: String,
-    default: "-"
+    required: true
   },
   timestamp: {
     type: Date,
@@ -20,4 +20,4 @@ const PumpLogSchema = new mongoose.Schema({
   }
 });
 
-module.exports = mongoose.model("PumpLog", PumpLogSchema);
+module.exports = mongoose.model("ActuatorHistory", ActuatorHistorySchema);

@@ -1,7 +1,7 @@
 require("dotenv").config();
 const readline = require("readline");
 const { connectRabbit, getChannel } = require("./rabbit");
-const PumpLog = require("../models/PumpLog");
+const ActuatorHistory = require("../models/actuatorHistory");
 
 // ======================
 // CONFIG LEVEL AIR
@@ -23,7 +23,7 @@ const PUMP_COOLDOWN_MS = 30 * 1000;
 // ======================
 // LOG INTERVAL (6 JAM)
 // ======================
-const LOG_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const LOG_INTERVAL_MS =  1000;
 
 // ======================
 // GLOBAL STATES
@@ -254,7 +254,7 @@ async function publishRelay(channel, {
 
   if (shouldSaveLog(relay)) {
     try {
-      await PumpLog.create(payload);
+      await ActuatorHistory.create(payload);
     } catch (_) {}
   }
 

@@ -23,7 +23,7 @@ const PUMP_COOLDOWN_MS = 30 * 1000;
 // ======================
 // LOG INTERVAL (6 JAM)
 // ======================
-const LOG_INTERVAL_MS =  1000;
+const LOG_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 // ======================
 // GLOBAL STATES
